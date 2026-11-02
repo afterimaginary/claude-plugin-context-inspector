@@ -1,12 +1,21 @@
 # Context Inspector
 
-A Claude Code plugin that shows what Claude still knows after it compacts a conversation.
+See the summaries Claude Code writes when it compacts a conversation. The app never shows them.
 
-When a conversation gets long, Claude Code compacts it: the earlier messages are replaced by a
-summary, and some files, skills and recent messages are attached again. This plugin adds a
-sidebar that shows what came back and how much room each part takes.
+When a conversation gets long, Claude Code compacts it: it replaces the earlier messages with a
+summary that Claude writes, and from then on that summary is all Claude remembers of them. The
+app shows only a "compacted" marker, never the summary itself, so you can't see what Claude kept,
+what it dropped, or how its picture of the work changed from one compaction to the next.
 
-## What it shows
+This plugin adds a panel that shows:
+
+- **The summary** from the latest compaction, in full.
+- **Past compactions.** Every summary from the conversation, not only the latest.
+- **Diffs between compactions.** What each summary added and dropped compared with the one before.
+- **What else is in context.** The files, skills and recent messages attached again after the
+  compaction, and how much room each takes.
+
+## What's in the panel
 
 - **Overview.** How much is in context after the compaction, as a bar and a list:
   - the summary of earlier work;
