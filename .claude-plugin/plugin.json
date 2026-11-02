@@ -1,0 +1,6 @@
+{
+  "name": "compaction-viewer",
+  "version": "0.1.0",
+  "description": "See what Claude kept when it compacted the conversation: the latest summary, what changed, and a timeline",
+  "types": "./types/index.d.ts"
+}

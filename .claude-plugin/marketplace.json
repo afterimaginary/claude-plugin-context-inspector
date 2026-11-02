@@ -1,0 +1,5 @@
+{
+  "name": "context-inspector",
+  "owner": { "name": "afterimaginary" },
+  "plugins": [{ "name": "compaction-viewer", "source": "./" }]
+}
