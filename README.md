@@ -15,6 +15,8 @@ This plugin adds a panel that shows:
 - **What else is in context.** The files, skills and recent messages attached again after the
   compaction, and how much room each takes.
 
+<img src="docs/overview.png" alt="The panel's overview: the latest compaction's summary, with the rest of what Claude has in context listed by size" width="560">
+
 ## What's in the panel
 
 - **Overview.** How much is in context after the compaction, as a bar and a list:
@@ -31,10 +33,6 @@ This plugin adds a panel that shows:
 
 Open it with the `N×` badge in the footer (it appears once the conversation has compacted) or
 with `/compacted`. Sizes are estimates, at about four characters to a token.
-
-## Screenshots
-
-_Coming soon._
 
 ## Install
 
