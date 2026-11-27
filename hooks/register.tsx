@@ -24,6 +24,8 @@ const COLORS = {
   kept: '#E0B45A',
   files: '#6FA8E8',
   skills: '#6CC29A',
+  plan: '#B08CE0',
+  instructions: '#D98BB8',
   other: '#8A8884',
   rest: '#4A4A4A',
 }
@@ -42,8 +44,15 @@ const statsOf = (c: Compaction) =>
     .filter(Boolean)
     .join(' · ')
 
-const optionLabel = (c: Compaction, i: number, count: number) =>
-  `#${i + 1} · ${formatWhen(c.at).replace(/^\w+ \d+, /, '')}${i === count - 1 ? ' (latest)' : ''}`
+const dayOf = (c: Compaction) => formatWhen(c.at).replace(/,.*$/, '')
+
+/** "#3 · 3:38 PM (latest)", with the date as well once the compactions span more than one day. */
+const optionLabel = (c: Compaction, i: number, list: readonly Compaction[]) => {
+  const oneDay = list.every(one => dayOf(one) === dayOf(c))
+  const when = oneDay ? formatWhen(c.at).replace(/^\w+ \d+, /, '') : formatWhen(c.at)
+
+  return `#${i + 1} · ${when}${i === list.length - 1 ? ' (latest)' : ''}`
+}
 
 /** A summary line as plain text: list markers and markdown emphasis taken off. */
 // The desktop pane clips long Text without an ellipsis, so preview lines are shortened here.
@@ -267,7 +276,7 @@ export const register: Register = on => {
         {Select ? (
           <Select
             key="pick"
-            options={list.map((one, i) => ({ value: String(i), label: optionLabel(one, i, list.length) }))}
+            options={list.map((one, i) => ({ value: String(i), label: optionLabel(one, i, list) }))}
             value={String(index)}
             onSelect={(value: string) => update($, selected, () => Number(value))}
           />
@@ -392,6 +401,8 @@ export const register: Register = on => {
       { label: 'Kept', tokens: keptTokens, color: COLORS.kept },
       { label: 'Files', tokens: sizeOf(ctx.files), color: COLORS.files },
       { label: 'Skills', tokens: sizeOf(ctx.skills), color: COLORS.skills },
+      { label: 'Plan', tokens: ctx.plan?.tokens ?? 0, color: COLORS.plan },
+      { label: 'Instructions', tokens: sizeOf(ctx.instructions), color: COLORS.instructions },
     ]
     const known = parts.reduce((sum, p) => sum + p.tokens, 0)
     const rest = c.postTokens === undefined ? 0 : Math.max(0, c.postTokens - known)
@@ -415,7 +426,7 @@ export const register: Register = on => {
           </Box>
         </Box>
         {detail && isOpen(id) ? (
-          <Box paddingLeft="lg" paddingBottom="sm" overflow="hidden">
+          <Box flexDirection="column" paddingLeft="lg" paddingBottom="sm" overflow="hidden">
             {detail}
           </Box>
         ) : null}
@@ -433,12 +444,18 @@ export const register: Register = on => {
             Claude has {approx(c.postTokens ?? total)} in context
           </Text>
         </Box>
-        <Box flexDirection="row" height={0.3} overflow="hidden">
-          {[...parts, { label: 'Rest', tokens: rest, color: COLORS.rest }]
-            .filter(p => p.tokens > 0)
-            .map(p => (
-              <Box key={`bar-${p.label}`} flexGrow={Math.max(1, Math.round((p.tokens / total) * 1000))} height={0.3} backgroundColor={p.color} />
-            ))}
+        {/* The setup is most of the context and the same each time, so the bar shows only what the compaction brought back. */}
+        <Box flexDirection="column" gap="xs">
+          <Box flexDirection="row" height={0.3} overflow="hidden">
+            {parts
+              .filter(p => p.tokens > 0)
+              .map(p => (
+                <Box key={`bar-${p.label}`} flexGrow={Math.max(1, Math.round((p.tokens / known) * 1000))} height={0.3} backgroundColor={p.color} />
+              ))}
+          </Box>
+          <Text dimColor>
+            {approx(known)} brought back{rest > 0 ? ` · ${approx(rest)} system prompt and setup` : ''}
+          </Text>
         </Box>
         <Box flexDirection="column" gap="xs">
           {row(
@@ -483,7 +500,7 @@ export const register: Register = on => {
                 {ctx.kept.map((m, i) => (
                   <Text key={`kept-${i}`} wrap="truncate-end">
                     <Text dimColor>{m.role === 'user' ? 'You' : 'Claude'} </Text>
-                    {m.text || '(empty)'}
+                    {clip(m.text || '(empty)', e.props.bodyColumns - 16)}
                   </Text>
                 ))}
               </Box>,
@@ -496,10 +513,14 @@ export const register: Register = on => {
               approx(sizeOf(ctx.files)),
               <Box flexDirection="column">
                 {ctx.files.map((f, i) => (
-                  <Box key={`file-${i}`} flexDirection="row" gap={1}>
-                    <Text wrap="truncate-end">{shortPath(f.name)}</Text>
-                    <Box flexGrow={1} />
-                    <Text dimColor>{f.isNameOnly ? 'named only' : approx(f.tokens ?? 0)}</Text>
+                  <Box key={`file-${i}`} flexDirection="row" gap="sm" alignItems="center">
+                    <Box flexGrow={1} flexShrink={1}>
+                      <Text wrap="truncate-end">{shortPath(f.name)}</Text>
+                    </Box>
+                    <Text dimColor tabular>
+                      {f.isNameOnly ? 'named only' : approx(f.tokens ?? 0)}
+                    </Text>
+                    <Box width={3} />
                   </Box>
                 ))}
               </Box>,
@@ -518,11 +539,11 @@ export const register: Register = on => {
                 </Box>
               ) : undefined,
             )}
-          {ctx.plan && row('plan', 'permission', 'Plan', approx(ctx.plan.tokens ?? 0))}
+          {ctx.plan && row('plan', COLORS.plan, 'Plan', approx(ctx.plan.tokens ?? 0))}
           {ctx.instructions.length > 0 &&
             row(
               'instructions',
-              COLORS.other,
+              COLORS.instructions,
               `Instructions: ${ctx.instructions.map(one => one.name.split('/').pop()).join(', ')}`,
               approx(sizeOf(ctx.instructions)),
             )}
