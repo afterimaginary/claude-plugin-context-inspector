@@ -45,6 +45,9 @@ const list = (value: unknown): Row[] =>
   Array.isArray(value) ? value.filter((v): v is Row => v !== null && typeof v === 'object') : []
 
 /** About four characters to a token: close enough to size things against each other. */
+/** How many lines of a plan the overview shows. */
+const PREVIEW_LINES = 6
+
 export const estimateTokens = (text: string) => Math.round(text.length / 4)
 
 const emptyContext = (meta: Row): CompactionContext => ({
@@ -92,7 +95,15 @@ const addAttachment = (context: CompactionContext, attachment: Row) => {
       })
       break
     case 'plan_file_reference':
-      context.plan = { name: str(attachment.planFilePath), tokens: estimateTokens(str(attachment.planContent)) }
+      context.plan = {
+        name: str(attachment.planFilePath),
+        tokens: estimateTokens(str(attachment.planContent)),
+        preview: str(attachment.planContent)
+          .split('\n')
+          .map(line => line.trim())
+          .filter(Boolean)
+          .slice(0, PREVIEW_LINES),
+      }
       break
     case 'task_status':
       context.tasks.push({ name: `${str(attachment.description)} (${str(attachment.status)})` })
@@ -252,7 +263,95 @@ const norm = (line: string) =>
     .trim()
     .toLowerCase()
 
-export type SectionChange = { title: string; added: string[]; removed: string[]; kept: number }
+export type WordPart = { text: string; kind: 'same' | 'add' | 'remove' }
+
+/** Longest-common-subsequence diff of two lists, compared by `key`. */
+const lcsDiff = <T,>(before: readonly T[], after: readonly T[], key: (item: T) => string) => {
+  const a = before.map(key)
+  const b = after.map(key)
+  const lcs = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0))
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      lcs[i]![j] = a[i] === b[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!)
+    }
+  }
+  const out: { item: T; kind: 'same' | 'add' | 'remove' }[] = []
+  let i = 0
+  let j = 0
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      out.push({ item: after[j]!, kind: 'same' })
+      i++
+      j++
+    } else if (lcs[i + 1]![j]! >= lcs[i]![j + 1]!) {
+      out.push({ item: before[i++]!, kind: 'remove' })
+    } else {
+      out.push({ item: after[j++]!, kind: 'add' })
+    }
+  }
+  while (i < a.length) out.push({ item: before[i++]!, kind: 'remove' })
+  while (j < b.length) out.push({ item: after[j++]!, kind: 'add' })
+
+  return out
+}
+
+/** What changed inside one line, word by word; neighbouring words of one kind are joined. */
+export const wordDiff = (before: string, after: string): WordPart[] => {
+  const parts: WordPart[] = []
+  for (const { item, kind } of lcsDiff(before.split(/\s+/).filter(Boolean), after.split(/\s+/).filter(Boolean), w => w.toLowerCase())) {
+    const last = parts[parts.length - 1]
+    if (last && last.kind === kind) last.text += ` ${item}`
+    else parts.push({ text: item, kind })
+  }
+
+  return parts
+}
+
+/** "src/db/schema.ts: what it holds" → "src/db/schema.ts": a line about the same thing as another. */
+const subjectOf = (line: string) => /^(\S+):\s/.exec(norm(line))?.[1]
+
+const wordsOf = (line: string) => new Set(norm(line).split(' '))
+
+/** How alike two lines are: 1 for the same subject, else the share of words they have in common. */
+const likeness = (a: string, b: string) => {
+  const subject = subjectOf(a)
+  if (subject !== undefined && subject === subjectOf(b)) return 1
+  const wa = wordsOf(a)
+  const wb = wordsOf(b)
+  const shared = [...wa].filter(w => wb.has(w)).length
+
+  return shared / (wa.size + wb.size - shared)
+}
+
+export type LineChange = { before: string; after: string; parts: WordPart[] }
+
+/** Pairs each removed line with the added line most like it, when they are alike enough to be one line changed. */
+export const pairChanges = (removed: readonly string[], added: readonly string[]) => {
+  const left = [...added]
+  const changed: LineChange[] = []
+  const unpaired: string[] = []
+  for (const before of removed) {
+    let best = -1
+    let score = 0.5
+    left.forEach((after, i) => {
+      const like = likeness(before, after)
+      if (like >= score) {
+        best = i
+        score = like
+      }
+    })
+    if (best < 0) {
+      unpaired.push(before)
+      continue
+    }
+    const after = left.splice(best, 1)[0]!
+    changed.push({ before, after, parts: wordDiff(before, after) })
+  }
+
+  return { changed, removed: unpaired, added: left }
+}
+
+export type SectionChange = { title: string; added: string[]; removed: string[]; changed: LineChange[]; kept: number }
 
 /** What each section gained and lost between two summaries, matched by section title. */
 export const diffSummaries = (before: string, after: string): SectionChange[] => {
@@ -265,49 +364,49 @@ export const diffSummaries = (before: string, after: string): SectionChange[] =>
     old.delete(key)
     const prevSet = new Set((prev?.lines ?? []).map(norm))
     const nextSet = new Set(section.lines.map(norm))
-    changes.push({
-      title: section.title,
-      added: section.lines.filter(line => !prevSet.has(norm(line))),
-      removed: (prev?.lines ?? []).filter(line => !nextSet.has(norm(line))),
-      kept: section.lines.filter(line => prevSet.has(norm(line))).length,
-    })
+    const paired = pairChanges(
+      (prev?.lines ?? []).filter(line => !nextSet.has(norm(line))),
+      section.lines.filter(line => !prevSet.has(norm(line))),
+    )
+    changes.push({ title: section.title, ...paired, kept: section.lines.filter(line => prevSet.has(norm(line))).length })
   }
   for (const section of old.values()) {
-    changes.push({ title: section.title, added: [], removed: section.lines, kept: 0 })
+    changes.push({ title: section.title, added: [], removed: section.lines, changed: [], kept: 0 })
   }
 
   return changes
 }
 
-export type InlineLine = { text: string; kind: 'same' | 'add' | 'remove' }
+export type InlineLine =
+  | { text: string; kind: 'same' | 'add' | 'remove' }
+  | { text: string; kind: 'change'; parts: WordPart[] }
 export type InlineSection = { title: string; lines: InlineLine[] }
 
-/** One section's lines in order, with what the earlier summary had in their place: a line diff by LCS. */
+/**
+ * One section's lines in order, with what the earlier summary had in their place: a line diff by
+ * LCS, where a removed line and an added one that are alike enough show as one line changed.
+ */
 const lineDiff = (before: readonly string[], after: readonly string[]): InlineLine[] => {
-  const a = before.map(norm)
-  const b = after.map(norm)
-  const lcs = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0))
-  for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) {
-      lcs[i]![j] = a[i] === b[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!)
-    }
-  }
   const lines: InlineLine[] = []
-  let i = 0
-  let j = 0
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) {
-      lines.push({ text: after[j]!, kind: 'same' })
-      i++
-      j++
-    } else if (lcs[i + 1]![j]! >= lcs[i]![j + 1]!) {
-      lines.push({ text: before[i++]!, kind: 'remove' })
-    } else {
-      lines.push({ text: after[j++]!, kind: 'add' })
+  let removed: string[] = []
+  let added: string[] = []
+  const flush = () => {
+    const paired = pairChanges(removed, added)
+    for (const text of paired.removed) lines.push({ text, kind: 'remove' })
+    for (const change of paired.changed) lines.push({ text: change.after, kind: 'change', parts: change.parts })
+    for (const text of paired.added) lines.push({ text, kind: 'add' })
+    removed = []
+    added = []
+  }
+  for (const { item, kind } of lcsDiff(before, after, norm)) {
+    if (kind === 'remove') removed.push(item)
+    else if (kind === 'add') added.push(item)
+    else {
+      flush()
+      lines.push({ text: item, kind })
     }
   }
-  while (i < a.length) lines.push({ text: before[i++]!, kind: 'remove' })
-  while (j < b.length) lines.push({ text: after[j++]!, kind: 'add' })
+  flush()
 
   return lines
 }

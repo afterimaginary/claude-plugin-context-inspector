@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { Compaction, ContextItem, Tab } from '../types'
+import type { InlineLine } from './parse'
 import { diffSummaries, formatTokens, formatWhen, inlineDiff, keptMessages, parseCompactions, sectionsOf } from './parse'
 
 const PANE = 'compaction'
@@ -11,7 +12,7 @@ const PANE_COLUMNS = 100
 
 // Change the tag when Compaction's fields change: it declines what an earlier version stored.
 const compactions = atom({ plugin: 'compaction-viewer', key: 'compactions' } as const, [], {
-  shape: 'compactions-2',
+  shape: 'compactions-3',
 })
 const selected = atom({ plugin: 'compaction-viewer', key: 'selected' } as const, null)
 const view = atom({ plugin: 'compaction-viewer', key: 'view' } as const, 'overview')
@@ -262,69 +263,119 @@ export const register: Register = on => {
     const changes = prev ? diffSummaries(prev.summary, c.summary) : []
     const added = changes.reduce((sum, ch) => sum + ch.added.length, 0)
     const removed = changes.reduce((sum, ch) => sum + ch.removed.length, 0)
+    const changed = changes.reduce((sum, ch) => sum + ch.changed.length, 0)
     const go = (i: number) => () => {
       if (i >= 0 && i < list.length) void update($, selected, () => i)
     }
+    // "+3 −1 ~2": lines added, removed and changed, each in its diff colour; zeros left out.
+    const counts = (a: number, r: number, ch: number) => (
+      <Text>
+        {[
+          a > 0 && <Text color="success">+{a}</Text>,
+          r > 0 && <Text color="error">−{r}</Text>,
+          ch > 0 && <Text color="warning">~{ch}</Text>,
+        ]
+          .filter(Boolean)
+          .flatMap((part, i) => (i === 0 ? [part] : [' ', part]))}
+      </Text>
+    )
 
-    const nav = (
-      <Box flexDirection="row" gap="xs" alignItems="center">
-        {page === 'summary' && (
+    // With one compaction there is nothing to step through, so the arrows and menu stay hidden.
+    const picker =
+      list.length > 1 ? (
+        <Box flexDirection="row" gap="xs" alignItems="center">
+          <Button key="prev" label="‹" dimColor={index === 0} onPress={go(index - 1)} />
+          {Select ? (
+            <Select
+              key="pick"
+              options={list.map((one, i) => ({ value: String(i), label: optionLabel(one, i, list) }))}
+              value={String(index)}
+              onSelect={(value: string) => update($, selected, () => Number(value))}
+            />
+          ) : (
+            <Text>
+              #{index + 1} of {list.length}
+            </Text>
+          )}
+          <Button key="next" label="›" dimColor={index === list.length - 1} onPress={go(index + 1)} />
+        </Box>
+      ) : null
+    const nav =
+      page === 'summary' ? (
+        <Box flexDirection="row" gap="xs" alignItems="center">
           <Button key="back" label="‹ Overview" onPress={() => update($, view, () => 'overview')} />
-        )}
-        {page === 'summary' && <Box flexGrow={1} />}
-        <Button key="prev" label="‹" dimColor={index === 0} onPress={go(index - 1)} />
-        {Select ? (
-          <Select
-            key="pick"
-            options={list.map((one, i) => ({ value: String(i), label: optionLabel(one, i, list) }))}
-            value={String(index)}
-            onSelect={(value: string) => update($, selected, () => Number(value))}
-          />
-        ) : (
-          <Text>
-            #{index + 1} of {list.length}
+          <Box flexGrow={1} />
+          {picker}
+        </Box>
+      ) : (
+        picker
+      )
+
+    /** One diff line: a fixed column for its mark, and its text wrapping under itself, not under the mark. */
+    const diffLine = (key: string, line: InlineLine) => (
+      <Box key={key} flexDirection="row" gap="xs" alignItems="flex-start">
+        <Box width={2} minWidth={2} flexShrink={0}>
+          <Text color={line.kind === 'add' ? 'success' : line.kind === 'change' ? 'warning' : 'error'}>
+            {line.kind === 'add' ? '+' : line.kind === 'remove' ? '−' : line.kind === 'change' ? '~' : ' '}
           </Text>
-        )}
-        <Button key="next" label="›" dimColor={index === list.length - 1} onPress={go(index + 1)} />
+        </Box>
+        <Box flexGrow={1} flexShrink={1}>
+          {line.kind === 'same' ? (
+            <Text>{plain(line.text)}</Text>
+          ) : line.kind === 'add' ? (
+            <Text color="success">{plain(line.text)}</Text>
+          ) : line.kind !== 'change' ? (
+            <Text dimColor strikethrough>
+              {plain(line.text)}
+            </Text>
+          ) : (
+            <Text>
+              {line.parts.flatMap((part, i) => [
+                i === 0 ? '' : ' ',
+                part.kind === 'same' ? (
+                  plain(part.text)
+                ) : part.kind === 'add' ? (
+                  <Text color="success">{plain(part.text)}</Text>
+                ) : (
+                  <Text dimColor strikethrough>
+                    {plain(part.text)}
+                  </Text>
+                ),
+              ])}
+            </Text>
+          )}
+        </Box>
       </Box>
     )
 
     if (page === 'summary') {
-      const shown = await read($, summaryTab)
+      // Without an earlier compaction there is nothing to compare with, so only the summary shows.
+      const shown = prev ? await read($, summaryTab) : 'summary'
       const tabs: { id: Tab; label: string }[] = [
         { id: 'summary', label: 'Summary' },
-        { id: 'sections', label: prev ? `By section +${added} −${removed}` : 'By section' },
+        { id: 'sections', label: `By section +${added} −${removed}${changed > 0 ? ` ~${changed}` : ''}` },
         { id: 'inline', label: 'Inline' },
       ]
       let body
       if (shown === 'summary' || !prev) {
-        body =
-          shown === 'summary' ? (
-            <Markdown key="summary" text={asHeadings(c.summary)} />
-          ) : (
-            <Text dimColor>This is the first compaction, so there's no earlier summary to compare with.</Text>
-          )
+        body = <Markdown key="summary" text={asHeadings(c.summary)} />
       } else if (shown === 'sections') {
-        const same = changes.filter(ch => ch.added.length + ch.removed.length === 0)
+        const same = changes.filter(ch => ch.added.length + ch.removed.length + ch.changed.length === 0)
         body = (
           <Box flexDirection="column" gap="sm">
             <Text dimColor>Compared with #{index} · {formatWhen(prev.at)}</Text>
             {changes
-              .filter(ch => ch.added.length + ch.removed.length > 0)
+              .filter(ch => ch.added.length + ch.removed.length + ch.changed.length > 0)
               .map(ch => (
                 <Box key={`chg-${ch.title}`} flexDirection="column">
                   <Text weight="semibold">
-                    {ch.title} <Text color="success">+{ch.added.length}</Text>{' '}
-                    <Text color="error">−{ch.removed.length}</Text>
+                    {ch.title} {counts(ch.added.length, ch.removed.length, ch.changed.length)}
                   </Text>
-                  {ch.removed.map(line => (
-                    <Text color="error" strikethrough>
-                      − {plain(line)}
-                    </Text>
-                  ))}
-                  {ch.added.map(line => (
-                    <Text color="success">+ {plain(line)}</Text>
-                  ))}
+                  {ch.removed.map((text, i) => diffLine(`r-${ch.title}-${i}`, { text, kind: 'remove' }))}
+                  {ch.changed.map((one, i) =>
+                    diffLine(`c-${ch.title}-${i}`, { text: one.after, kind: 'change', parts: one.parts }),
+                  )}
+                  {ch.added.map((text, i) => diffLine(`a-${ch.title}-${i}`, { text, kind: 'add' }))}
                 </Box>
               ))}
             {same.length > 0 && <Text dimColor>Unchanged: {same.map(ch => ch.title).join(', ')}</Text>}
@@ -337,26 +388,7 @@ export const register: Register = on => {
             {inlineDiff(prev.summary, c.summary).map(section => (
               <Box key={`inl-${section.title}`} flexDirection="column">
                 <Text weight="semibold">{section.title}</Text>
-                {section.lines.map(line => (
-                  <Box flexDirection="row" gap="xs" alignItems="flex-start">
-                    <Box width={2} minWidth={2} flexShrink={0}>
-                      <Text color={line.kind === 'add' ? 'success' : 'error'}>
-                        {line.kind === 'add' ? '+' : line.kind === 'remove' ? '−' : ' '}
-                      </Text>
-                    </Box>
-                    <Box flexGrow={1} flexShrink={1}>
-                      {line.kind === 'same' ? (
-                        <Text>{plain(line.text)}</Text>
-                      ) : line.kind === 'add' ? (
-                        <Text color="success">{plain(line.text)}</Text>
-                      ) : (
-                        <Text dimColor strikethrough>
-                          {plain(line.text)}
-                        </Text>
-                      )}
-                    </Box>
-                  </Box>
-                ))}
+                {section.lines.map((line, i) => diffLine(`l-${section.title}-${i}`, line))}
               </Box>
             ))}
           </Box>
@@ -373,6 +405,7 @@ export const register: Register = on => {
               {approx(c.summaryTokens)} · {sectionsOf(c.summary).length} sections
             </Text>
           </Box>
+          {prev && (
           <Box flexDirection="row" gap="xs">
             {tabs.map(t => (
               <Button
@@ -383,6 +416,7 @@ export const register: Register = on => {
               />
             ))}
           </Box>
+          )}
           {body}
         </Box>
       )
@@ -483,7 +517,7 @@ export const register: Register = on => {
                   {prev && (
                     <Text>
                       {' · '}
-                      <Text color="success">+{added}</Text> <Text color="error">−{removed}</Text>
+                      {counts(added, removed, changed)}
                     </Text>
                   )}
                 </Text>
@@ -539,13 +573,42 @@ export const register: Register = on => {
                 </Box>
               ) : undefined,
             )}
-          {ctx.plan && row('plan', COLORS.plan, 'Plan', approx(ctx.plan.tokens ?? 0))}
+          {ctx.plan &&
+            row(
+              'plan',
+              COLORS.plan,
+              'Plan',
+              approx(ctx.plan.tokens ?? 0),
+              <Box flexDirection="column">
+                <Text dimColor wrap="truncate-start">
+                  {shortPath(ctx.plan.name)}
+                </Text>
+                {(ctx.plan.preview ?? []).map((line, i) => (
+                  <Text key={`plan-${i}`} wrap="truncate-end">
+                    {clip(plain(line.replace(/^#+\s*/, '')), e.props.bodyColumns - 8)}
+                  </Text>
+                ))}
+              </Box>,
+            )}
           {ctx.instructions.length > 0 &&
             row(
               'instructions',
               COLORS.instructions,
               `Instructions: ${ctx.instructions.map(one => one.name.split('/').pop()).join(', ')}`,
               approx(sizeOf(ctx.instructions)),
+              <Box flexDirection="column">
+                {ctx.instructions.map((one, i) => (
+                  <Box key={`ins-${i}`} flexDirection="row" gap="sm" alignItems="center">
+                    <Box flexGrow={1} flexShrink={1}>
+                      <Text wrap="truncate-end">{shortPath(one.name)}</Text>
+                    </Box>
+                    <Text dimColor tabular>
+                      {approx(one.tokens ?? 0)}
+                    </Text>
+                    <Box width={3} />
+                  </Box>
+                ))}
+              </Box>,
             )}
           {ctx.tasks.length > 0 &&
             row(

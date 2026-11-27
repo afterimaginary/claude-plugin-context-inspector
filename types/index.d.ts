@@ -12,7 +12,14 @@ export type Compaction = {
 }
 
 /** One thing attached again after the compaction; tokens are estimates. */
-export type ContextItem = { name: string; tokens?: number; lines?: number; isNameOnly?: boolean }
+export type ContextItem = {
+  name: string
+  tokens?: number
+  lines?: number
+  isNameOnly?: boolean
+  /** The first lines of its text, for a look without opening the file. */
+  preview?: string[]
+}
 
 export type KeptMessage = { role: string; text: string; tokens: number }
 

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { cleanSummary, diffSummaries, keptMessages, parseCompactions } from '../hooks/parse'
+import { cleanSummary, diffSummaries, inlineDiff, keptMessages, pairChanges, parseCompactions, wordDiff } from '../hooks/parse'
 
 const RAW = (body: string) =>
   'This session is being continued from a previous conversation that ran out of context.\n\n' +
@@ -83,7 +83,7 @@ test('the diff reports what each section gained and lost', async () => {
 })
 
 const STORED = {
-  compactions: { shape: 'compactions-2', value: parseCompactions(LINES) },
+  compactions: { shape: 'compactions-3', value: parseCompactions(LINES) },
   view: 'overview',
   summaryTab: 'summary',
   open: ['summary', 'files'],
@@ -117,7 +117,7 @@ test('the summary page diffs by section', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /Compared with/ })).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'tab-sections' })).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'back' })).toBeTruthy()
-  expect((await ui.find({ type: 'Text', text: /\+ 2\.5px stroke/ }))?.text).toBeTruthy()
+  expect((await ui.find({ type: 'Text', text: /^2\.5px stroke$/ }))?.text).toBeTruthy()
   await ui.unmount()
 })
 
@@ -139,4 +139,31 @@ test('the footer badge shows the count', async ($, on) => {
   })
   expect(await footer.find({ type: 'Button', key: 'compacted-chip', label: '\u20022×\u2002' })).toBeTruthy()
   await footer.unmount()
+})
+
+test('a line edited between summaries shows as one line changed, word by word', async () => {
+  const paired = pairChanges(
+    ['- src/db/schema.ts: recipes and steps tables', '- Collections page'],
+    ['- src/db/schema.ts: added a search index', '- Ratings'],
+  )
+  expect(paired.changed.map(ch => ch.after)).toEqual(['- src/db/schema.ts: added a search index'])
+  expect(paired.removed).toEqual(['- Collections page'])
+  expect(paired.added).toEqual(['- Ratings'])
+  expect(wordDiff('the red stroke stays', 'the blue stroke stays')).toEqual([
+    { text: 'the', kind: 'same' },
+    { text: 'red', kind: 'remove' },
+    { text: 'blue', kind: 'add' },
+    { text: 'stroke stays', kind: 'same' },
+  ])
+  const lines = inlineDiff('1. Files:\n   - a.ts: old words here', '1. Files:\n   - a.ts: new words here').flatMap(s => s.lines)
+  expect(lines.map(l => l.kind)).toEqual(['change'])
+})
+
+test('with one compaction, the pane has no arrows, menu or diff tabs', async ($, on) => {
+  seed(on, { compactions: { shape: 'compactions-3', value: parseCompactions(LINES).slice(0, 1) }, view: 'summary', summaryTab: 'inline' })
+  const ui = await mountPane($)
+  expect(await ui.find({ type: 'Select', key: 'pick' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'tab-inline' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'back' })).toBeTruthy()
+  await ui.unmount()
 })
