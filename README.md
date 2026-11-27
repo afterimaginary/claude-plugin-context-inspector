@@ -32,7 +32,9 @@ This plugin adds a panel that shows:
 - **Every compaction.** Step through earlier compactions with the arrows or the menu.
 
 Open it with the `N×` badge in the footer (it appears once the conversation has compacted) or
-with `/compacted`. Sizes are estimates, at about four characters to a token.
+with `/compacted`. `/compacted inline 2` opens compaction #2's summary on the Inline tab; the
+words `summary`, `sections`, `inline` and `overview` and a compaction number work in any order.
+Sizes are estimates, at about four characters to a token.
 
 ## Install
 

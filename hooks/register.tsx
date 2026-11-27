@@ -28,10 +28,6 @@ const COLORS = {
   rest: '#4A4A4A',
 }
 
-// Set while reviewing a page in screenshots; null in normal use.
-const REVIEW_PAGE = null as 'summary' | null
-const REVIEW_TAB = null as Tab | null
-
 /** "1. Primary Request and Intent:" at the left edge → a heading, so sections stand above their bullets. */
 const asHeadings = (summary: string) =>
   summary.replace(/^\d+\.\s+(.+?):?\s*$/gm, (_, title: string) => `### ${title.replace(/\*\*/g, '')}`)
@@ -72,30 +68,43 @@ const shortPath = (path: string) => {
 const sizeOf = (items: readonly ContextItem[]) => items.reduce((sum, item) => sum + (item.tokens ?? 0), 0)
 const approx = (n: number) => `~${formatTokens(n)}`
 
+// One $.fs.read takes at most 4 MiB; a longer transcript is cut down with awk and grep first.
+const READ_LIMIT = 4 * 1024 * 1024
+
 async function findTranscript($: EngineInterface) {
   if (transcript) return transcript
-  const home = await $.env.get('HOME')
+  // A development aid: read this transcript instead of the session's own.
+  const fixture = await $.env.get('COMPACTION_VIEWER_FIXTURE')
+  if (fixture) return (transcript = fixture)
+  const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
   const id = await $.session.id()
   if (!home || !id) return undefined
   // Found by session id, never by newest file: that could be another project's conversation.
-  const found = await $.process.run(
-    ['find', `${home}/.claude/projects`, '-maxdepth', '2', '-name', `${id}.jsonl`],
-    { timeoutMs: 10000 },
-  )
-  transcript = found.stdout.split('\n').find(line => line.trim())?.trim()
+  const projects = `${home}/.claude/projects`
+  const folders = await $.fs.list(projects).catch(() => [])
+  for (const folder of folders) {
+    if (folder.kind !== 'dir') continue
+    const path = `${projects}/${folder.name}/${id}.jsonl`
+    const found = await $.fs.stat(path).catch(() => undefined)
+    if (found?.kind === 'file') return (transcript = path)
+  }
 
-  return transcript
+  return undefined
 }
 
-async function scan($: EngineInterface) {
-  const file = await findTranscript($)
-  if (!file) return
-  // The transcript can pass the 4 MiB a $.fs.read allows, so awk hands back only each
-  // compaction's rows: from its boundary to Claude's next reply, the attachments between.
-  const rows = await $.process.run(
-    ['awk', WINDOW, file],
-    { timeoutMs: 15000 },
-  )
+/** The compactions in a transcript small enough to read whole. */
+async function readWhole($: EngineInterface, file: string) {
+  const lines = (await $.fs.read(file)).split('\n')
+  const list = parseCompactions(lines)
+  for (const c of list) c.context.kept = keptMessages(lines, c.context.keptIds)
+
+  return list
+}
+
+/** The compactions in a long transcript: awk hands back only each compaction's rows. */
+async function readWindows($: EngineInterface, file: string) {
+  // From each boundary to Claude's next reply, the attachments between.
+  const rows = await $.process.run(['awk', WINDOW, file], { timeoutMs: 15000 })
   const list = parseCompactions(rows.stdout.split('\n'))
   const ids = list.flatMap(c => c.context.keptIds)
   if (ids.length > 0) {
@@ -106,6 +115,15 @@ async function scan($: EngineInterface) {
     const lines = kept.stdout.split('\n')
     for (const c of list) c.context.kept = keptMessages(lines, c.context.keptIds)
   }
+
+  return list
+}
+
+async function scan($: EngineInterface) {
+  const file = await findTranscript($)
+  if (!file) return
+  const { size } = await $.fs.stat(file)
+  const list = size <= READ_LIMIT ? await readWhole($, file) : await readWindows($, file)
   await update($, compactions, () => list)
 }
 
@@ -137,22 +155,45 @@ async function rescanAfterCompaction($: EngineInterface) {
   $.ui.toast('Conversation compacted · /compacted shows what Claude kept')
 }
 
+const TABS: readonly Tab[] = ['summary', 'sections', 'inline']
+
+/** `/compacted inline 2`: opens straight to a page, a tab and a compaction (counted from 1), in any order. */
+async function goTo($: EngineInterface, args: string, count: number) {
+  for (const word of args.trim().toLowerCase().split(/\s+/).filter(Boolean)) {
+    const n = Number(word.replace(/^#/, ''))
+    if (Number.isInteger(n) && n >= 1 && n <= count) {
+      await update($, selected, () => n - 1)
+    } else if (word === 'overview') {
+      await update($, view, () => 'overview')
+    } else if ((TABS as readonly string[]).includes(word)) {
+      await update($, view, () => 'summary')
+      await update($, summaryTab, () => word as Tab)
+    }
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     await $.command.register({
       name: 'compacted',
       description: 'Show what Claude kept when it compacted this conversation',
+      argumentHint: '[summary|sections|inline] [#]',
     })
-    void scan($).catch(() => undefined)
+    // With test data loaded, the pane opens as the session starts.
+    const isDev = Boolean(await $.env.get('COMPACTION_VIEWER_FIXTURE'))
+    void scan($)
+      .then(() => (isDev ? openPane($) : undefined))
+      .catch(() => undefined)
 
     return started
   })
 
-  on('command.run', { command: 'compacted' }, async $ => {
+  on('command.run', { command: 'compacted' }, async ($, e) => {
     const opened = await openPane($)
     const { list } = await current($)
     if (list.length === 0) return { text: 'This conversation has not been compacted yet.' }
+    await goTo($, e.args, list.length)
 
     return {
       text: opened.isPlaced
@@ -208,7 +249,7 @@ export const register: Register = on => {
       )
     }
 
-    const page = REVIEW_PAGE ?? (await read($, view))
+    const page = await read($, view)
     const changes = prev ? diffSummaries(prev.summary, c.summary) : []
     const added = changes.reduce((sum, ch) => sum + ch.added.length, 0)
     const removed = changes.reduce((sum, ch) => sum + ch.removed.length, 0)
@@ -240,7 +281,7 @@ export const register: Register = on => {
     )
 
     if (page === 'summary') {
-      const shown = REVIEW_TAB ?? (await read($, summaryTab))
+      const shown = await read($, summaryTab)
       const tabs: { id: Tab; label: string }[] = [
         { id: 'summary', label: 'Summary' },
         { id: 'sections', label: prev ? `By section +${added} −${removed}` : 'By section' },
