@@ -295,14 +295,40 @@ const lcsDiff = <T,>(before: readonly T[], after: readonly T[], key: (item: T) =
   return out
 }
 
-/** What changed inside one line, word by word; neighbouring words of one kind are joined. */
+/** A word as compared: case and trailing punctuation don't count, so "form," matches "form". */
+const wordKey = (word: string) => word.toLowerCase().replace(/[.,;:!?)]+$/, '')
+
+/**
+ * What changed inside one line, word by word. Each run of changes reads as the old words, then
+ * the new: a lone short word the two happen to share ("and", "a") doesn't split a run in two.
+ */
 export const wordDiff = (before: string, after: string): WordPart[] => {
+  const raw = lcsDiff(before.split(/\s+/).filter(Boolean), after.split(/\s+/).filter(Boolean), wordKey)
+  const isChange = (i: number) => raw[i] !== undefined && raw[i]!.kind !== 'same'
   const parts: WordPart[] = []
-  for (const { item, kind } of lcsDiff(before.split(/\s+/).filter(Boolean), after.split(/\s+/).filter(Boolean), w => w.toLowerCase())) {
-    const last = parts[parts.length - 1]
-    if (last && last.kind === kind) last.text += ` ${item}`
-    else parts.push({ text: item, kind })
+  let removed: string[] = []
+  let added: string[] = []
+  const flush = () => {
+    if (removed.length > 0) parts.push({ text: removed.join(' '), kind: 'remove' })
+    if (added.length > 0) parts.push({ text: added.join(' '), kind: 'add' })
+    removed = []
+    added = []
   }
+  raw.forEach(({ item, kind }, i) => {
+    const isFiller = kind === 'same' && wordKey(item).length <= 3 && isChange(i - 1) && isChange(i + 1)
+    if (kind === 'remove') removed.push(item)
+    else if (kind === 'add') added.push(item)
+    else if (isFiller) {
+      removed.push(item)
+      added.push(item)
+    } else {
+      flush()
+      const last = parts[parts.length - 1]
+      if (last && last.kind === 'same') last.text += ` ${item}`
+      else parts.push({ text: item, kind })
+    }
+  })
+  flush()
 
   return parts
 }

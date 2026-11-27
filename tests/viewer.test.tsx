@@ -155,6 +155,17 @@ test('a line edited between summaries shows as one line changed, word by word', 
     { text: 'blue', kind: 'add' },
     { text: 'stroke stays', kind: 'same' },
   ])
+  expect(wordDiff('steps and old tables', 'a new column and an index')).toEqual([
+    { text: 'steps and old tables', kind: 'remove' },
+    { text: 'a new column and an index', kind: 'add' },
+  ])
+  expect(wordDiff('the recipe form with rows', 'the recipe form, now with images').map(p => p.kind)).toEqual([
+    'same',
+    'add',
+    'same',
+    'remove',
+    'add',
+  ])
   const lines = inlineDiff('1. Files:\n   - a.ts: old words here', '1. Files:\n   - a.ts: new words here').flatMap(s => s.lines)
   expect(lines.map(l => l.kind)).toEqual(['change'])
 })
